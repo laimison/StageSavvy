@@ -1,6 +1,6 @@
 # Stage Savvy
 
-Stage Savvy is MIDI translator that is capable of translating any MIDI message to any in Ableton. You don't need to run separate, it installs as Ableton MIDI Remote script inside Ableton.
+Stage Savvy is MIDI translator that is capable of translating any MIDI message to any in Ableton. You don't need to run separate app, this code installs as Ableton MIDI Remote script inside Ableton.
 
 ## Support
 
@@ -10,13 +10,9 @@ Ableton 12.1
 
 ## Installation
 
-1)
+1) Place StageSavvy dir inside /Users/your-user/Music/Ableton/User Library/Remote Scripts dir
 
-Place StageSavvy dir inside /Users/your-user/Music/Ableton/User Library/Remote Scripts dir
-
-2)
-
-Select ControlSurface: StageSavvy
+2) Select ControlSurface: StageSavvy
 
 Input: your-midi-device that you want to translate messages from
 
