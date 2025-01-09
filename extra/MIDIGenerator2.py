@@ -21,7 +21,7 @@ value = int(sys.argv[4])
 wait = sys.argv[5].replace('s', '')
 
 midi_out = rtmidi.MidiOut()
-midi_out.open_virtual_port("StageSavvy MIDI Generator")
+midi_out.open_virtual_port("StageSavvy MIDI Generator 2")
 
 print("Wait 5 seconds")
 time.sleep(5)

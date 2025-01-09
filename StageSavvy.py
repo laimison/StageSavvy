@@ -1,4 +1,3 @@
-# from __future__ import with_statement, absolute_import, print_function, unicode_literals
 from __future__ import with_statement
 
 import sys
@@ -9,7 +8,7 @@ import time
 import subprocess
 import threading
 import socket
-from tomllib import load
+import re
 
 from _Framework.ControlSurface import ControlSurface # Base class
 from _Framework.MidiMap import MidiMap
@@ -20,51 +19,61 @@ class StageSavvy(ControlSurface):
     __module__ = __name__
     __doc__ = "StageSavvy Script"
     __name__ = "StageSavvy MIDI Remote Script"
-    
+
+    # Define a global variable for sock file
+    sock_file = None
+    midi_translator_path = None
+
     def __init__(self, c_instance):
         ControlSurface.__init__(self, c_instance)
 
+        # Initialize global variables
+        StageSavvy.sock_file = "/tmp/stagesavvy.sock"
+        StageSavvy.midi_translator_path = os.path.realpath(os.path.dirname(os.path.abspath(__file__)) + "/MIDITranslator/MIDITranslator")
+
         self.log_message('Initialising StageSavvy in Log.txt')
+        self.log_message("MIDITranslator's location", StageSavvy.midi_translator_path)
+
+        for n in Live.Application.get_application().control_surfaces:
+            if n is not None:
+                if type(n) == Live.Application.ControlSurfaceProxy:
+                    self.log_message("non legacy control surface detected:", n.type_name)
 
         # Print environment information
         self.log_message("Using Python version", sys.version)
         self.log_message("Using platform", platform.platform())
         self.log_message("Script's location", os.path.abspath(__file__))
 
-        # Stop MIDISender
-        try:
-            sock_path = '/tmp/stagesavvy.sock'
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.connect(sock_path)
-            message = "Stop"
-            s.send(message.encode())
-            s.close()
-        except:
-            pass
+        # Start MIDITranslator
+        thread_start_midi_translator = threading.Thread(target=StageSavvy.start_midi_translator, args=(self, StageSavvy.midi_translator_path,))
+        thread_start_midi_translator.start()
         
-        # Start MIDISender
-        cmd = os.path.realpath(os.path.dirname(os.path.abspath(__file__)) + "/MIDISender/MIDISender")
-        self.log_message("MIDISender's location", cmd)
-        thread1 = threading.Thread(target=StageSavvy.start_midi_sender, args=(self, cmd,))
-        thread1.start()
-        time.sleep(0.5)
-
-        # Connect socket
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.connect("/tmp/stagesavvy.sock")
+        # Connect via sock file
+        thread_connect_socket = threading.Thread(target=StageSavvy.connect_socket, args=(self,))
+        thread_connect_socket.start()
 
         self.c_instance = c_instance
 
-    def performance_test(self):
-        # to call this in thread:
-        # thread_test = threading.Thread(target=StageSavvy.performance_test, args=(self,))
-        # thread_test.start()
-        self.log_message("Performance test begins")
-        for i in range(10000000):
-            i = i + 1
-        self.log_message("Perofrmance test ends")
+        with self.component_guard():
+            self._clip_actions = StageSavvyComponent(self)
 
-    def start_midi_sender(self, cmd):
+    def disconnect(self):
+        self.log_message('disconnect')
+
+        # Disconnect sock
+        self.sock.close()
+
+        # Stop MIDITranslator
+        self.stop_midi_translator()
+
+        ControlSurface.disconnect(self)
+
+    def refresh_state(self):
+        self.log_message('refresh_state triggered')
+        pass
+
+    def start_midi_translator(self, cmd):
+        # Start MIDITranslator
         process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         while True:
             output = process.stdout.readline()
@@ -75,147 +84,90 @@ class StageSavvy(ControlSurface):
                 self.log_message(output_to_print)
         process.wait()
 
-    def send_midi_message(self, type, ch, key, value, delay):
-        if delay > 0:
-            self.log_message("send_midi_message begins with delay")
-            time.sleep(int(delay) / 1000)
-        else:
-            self.log_message("send_midi_message begins without delay")
+        exit_code = process.returncode
 
-        message = type + " " + str(ch) + " " + str(key) + " " + str(value)
-        self.sock.send(message.encode())
+        if exit_code != 0:
+            self.log_message("MIDITranslator exited with code", exit_code)
 
-        self.log_message("send_midi_message finished")
-
-    def receive_midi(self, midi_bytes):
-        self.log_message("receive_midi begins")
-
-        type = ""
-        key = midi_bytes[1]
-        value = midi_bytes[2]
-
-        if midi_bytes[0] == 176:
-            type = "CC"
-        if midi_bytes[0] == 144:
-            type = "NoteOn"
-        if midi_bytes[0] == 128:
-            type = "NoteOff"
-
-        channel = 1
-
-        data = self.print_midi_translation_tree()
-        type = type.replace("On", "").replace("Off", "").upper()
-        destination = data[type][str(channel)][str(key)][value]
-
-        destination_type = destination[0]
-        destination_channel = 1
-        destination_key = destination[2]
-        destination_value = destination[3]
-
-        destination_length = int(destination[4].replace("ms", ""))
-
-        delay_ms_note_on = 0
-        delay_ms_note_off = destination_length
-        delay_ms_cc = 0
-
-        if destination_type == "CC":
-            self.log_message("receive_midi input " + type + "" + str(key) + " at " + str(value) + ", output " + "CC" + "" + str(destination_key) + " at " + str(destination_value) + " in " + str(delay_ms_cc) + " ms")
-
-            thread_cc = threading.Thread(target=StageSavvy.send_midi_message, args=(self, "CC", destination_channel, destination_key, destination_value, delay_ms_cc))
-            thread_cc.start()
-
-        if destination_type == "NOTE":
-            self.log_message("receive_midi input " + type + "" + str(key) + " at " + str(value) + ", output " + "NoteOn" + "" + str(destination_key) + " at " + str(destination_value) + " in " + str(delay_ms_note_on) + "ms and do NoteOff in " + str(delay_ms_note_off) + "ms")
-
-            thread_note_on = threading.Thread(target=StageSavvy.send_midi_message, args=(self, "NoteOn", destination_channel, destination_key, destination_value, delay_ms_note_on))
-            thread_note_on.start()
-            thread_note_off = threading.Thread(target=StageSavvy.send_midi_message, args=(self, "NoteOff", destination_channel, destination_key, 0, delay_ms_note_off))
-            thread_note_off.start()
-
-        self.log_message("receive_midi done")
-
-    def update_midi_translation_tree(self, input):
-        global midi_translation_tree_global_var
-        midi_translation_tree_global_var = input
-
-    def print_midi_translation_tree(self):
-        return midi_translation_tree_global_var
-
-    def build_midi_map(self, midi_map_handle):
-        self.log_message("build_midi_map")
-
-        script_handle = self.c_instance.handle()
-
-        file = os.path.realpath(os.path.dirname(os.path.abspath(__file__)) + "/Settings.txt")
-        with open(file, 'rb') as f:
-            settings = load(f)
-        self.log_message("Settings.txt:", settings)
-
-        # Variable for MIDI translation settings
-        global midi_translation_tree
-        midi_translation_tree = {}
-
-        for key, value in settings.items():
-            for sub_key, sub_value in value.items():
-                type = sub_key.split(".")[0]
-                channel = sub_key.split(".")[1]
-                key = sub_key.split(".")[2]
-                value = sub_key.split(".")[3]
-
-                type_to = sub_value.split(".")[0]
-                channel_to = sub_value.split(".")[1]
-                key_to = sub_value.split(".")[2]
-                value_to = sub_value.split(".")[3]
-
-                if len(sub_value.split(".")) == 5:
-                    length_to = sub_value.split(".")[4]
-                else:
-                    length_to = "0ms"
-
-                if type not in midi_translation_tree:
-                    midi_translation_tree[type] = {}
-
-                if channel not in midi_translation_tree[type]:
-                    midi_translation_tree[type][channel] = {}
-
-                if key not in midi_translation_tree[type][channel]:
-                    midi_translation_tree[type][channel][key] = {}
-
-                if value == "X":
-                    for v in range(128):
-                        midi_translation_tree[type][channel][key][v] = type_to, channel_to, key_to, v, length_to
-                else:
-                    midi_translation_tree[type][channel][key][value] = type_to, channel_to, key_to, value_to, length_to
-
-                if type == "CC":
-                    self.log_message("Map CC Ch:" + channel + " Key:" + key)
-                    Live.MidiMap.forward_midi_cc(script_handle, midi_map_handle, int(channel) - 1, int(key))
-
-                if type == "NOTE":
-                    self.log_message("Map Note Ch:" + channel + " Key:" + key)
-                    Live.MidiMap.forward_midi_note(script_handle, midi_map_handle, int(channel) - 1 , int(key))
-
-        self.update_midi_translation_tree(midi_translation_tree)
-
-    def refresh_state(self):
-        self.log_message('refresh_state')
-        pass
-
-    def disconnect(self):
-        self.log_message('disconnect')
-
-        # Disconnect sock
-        self.sock.close()
-
-        # Stop MIDISender
+    def stop_midi_translator(self):
         try:
-            sock_path = '/tmp/stagesavvy.sock'
+            message = "Stop"
+            sock_path = StageSavvy.sock_file
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.connect(sock_path)
-            message = "Stop"
             s.send(message.encode())
             s.close()
+
+            os.system("killall MIDITranslator")
         except:
             pass
 
-        ControlSurface.disconnect(self)
+    def connect_socket(self):
+        time.sleep(0.05)
+        try:
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.connect(StageSavvy.sock_file)
+        except:
+            pass
+
+    def send_message_via_socket(self, message):
+        sock_path = StageSavvy.sock_file
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(sock_path)
+        s.send(message.encode())
+        s.close()
+
+    def receive_midi(self, midi_bytes):
+        pass
+
+    def build_midi_map(self, midi_map_handle):
+        pass
+
+    def _on_track_list_changed(self):
+        pass
+
+    def _on_scene_list_changed(self):
+        pass
+
+    def _on_clip_triggered(self, clip_slot):
+        pass
+
+    def _on_selected_track_changed(self):
+        pass
+
+    def _on_selected_scene_changed(self):
+        pass
+
+    def _on_selected_clip_changed(self):
+        pass
+class StageSavvyComponent(ControlSurfaceComponent):
+    __module__ = __name__
+    __doc__ = "StageSavvy Clip Actions"
+    __name__ = "StageSavvy MIDI Remote Script"
+
+    def __init__(self, parent):
+        ControlSurfaceComponent.__init__(self)
+        self._parent = parent
+
+        parent.log_message('Initialising StageSavvyComponent in Log.txt')
+
+    def disconnect(self):
+        self._parent = None
+
+    def set_enabled(self, enabled):
+        self._enabled = enabled
+
+    def on_time_changed(self):
+        pass
+
+    def on_track_list_changed(self):
+        pass
+
+    def on_scene_list_changed(self):
+        pass
+
+    def on_selected_track_changed(self):
+        pass
+
+    def on_selected_scene_changed(self):
+        pass
