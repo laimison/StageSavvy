@@ -4,7 +4,7 @@ Stage Savvy is a MIDI translator that is capable of translating any MIDI message
 
 ## Support
 
-Mac OS
+Only Apple Silicon
 
 Ableton 12.1
 
